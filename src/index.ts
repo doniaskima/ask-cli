@@ -12,8 +12,11 @@ import "dotenv/config";
 // Types
 // ----------------------------
 
+type AskMode = "generate" | "explain";
+
 type AskHistoryEntry = {
   timestamp: string;
+  mode: AskMode;
   question: string;
   answer: string;
 };
@@ -22,8 +25,14 @@ type AskConfig = {
   apiKey?: string;
 };
 
+type AskProjectConfig = {
+  stack?: string;
+  packageManager?: string;
+  tags?: string[];
+};
+
 // ----------------------------
-// Error types
+// Error types (for future real API integration)
 // ----------------------------
 
 class AskError extends Error {}
@@ -39,6 +48,7 @@ const HOME_DIR = os.homedir();
 const ASK_DIR = path.join(HOME_DIR, ".ask-cli");
 const HISTORY_PATH = path.join(ASK_DIR, "history.json");
 const CONFIG_PATH = path.join(ASK_DIR, "config.json");
+const PROJECT_RC = ".askrc.json";
 
 // ----------------------------
 // Storage helpers
@@ -57,7 +67,6 @@ function readConfig(): AskConfig {
   try {
     return JSON.parse(raw);
   } catch {
-    // corrupt config – ignore and start fresh
     return {};
   }
 }
@@ -85,6 +94,21 @@ function appendHistory(entry: AskHistoryEntry): void {
 }
 
 // ----------------------------
+// Project config
+// ----------------------------
+
+function readProjectConfig(cwd: string): AskProjectConfig | null {
+  const rcPath = path.join(cwd, PROJECT_RC);
+  if (!fs.existsSync(rcPath)) return null;
+  try {
+    const raw = fs.readFileSync(rcPath, "utf8");
+    return JSON.parse(raw) as AskProjectConfig;
+  } catch {
+    return null;
+  }
+}
+
+// ----------------------------
 // UI helpers
 // ----------------------------
 
@@ -100,7 +124,6 @@ function header(): void {
 function stripCodeFences(text: string): string {
   let t = text.trim();
 
-  // ```bash ... ``` or ```...```
   if (t.startsWith("```") && t.endsWith("```")) {
     const firstNewline = t.indexOf("\n");
     if (firstNewline !== -1) {
@@ -110,7 +133,6 @@ function stripCodeFences(text: string): string {
     }
   }
 
-  // `single-line`
   if (t.startsWith("`") && t.endsWith("`") && t.length > 2) {
     t = t.slice(1, -1).trim();
   }
@@ -136,9 +158,10 @@ function detectTools(): string {
   const candidates = [
     "git",
     "npm",
-    "node",
     "pnpm",
     "yarn",
+    "bun",
+    "node",
     "python",
     "pip",
     "docker",
@@ -156,7 +179,6 @@ function detectTools(): string {
 }
 
 function detectShell(): string {
-  // On Windows COMSPEC usually points to cmd.exe or powershell
   return process.env.SHELL || process.env.COMSPEC || "unknown";
 }
 
@@ -171,42 +193,148 @@ function summarizeFiles(cwd: string): string {
   }
 }
 
+type GitContext = {
+  isRepo: boolean;
+  branch?: string;
+  summary?: string;
+};
+
+function detectGitContext(cwd: string): GitContext {
+  const gitDir = path.join(cwd, ".git");
+  if (!fs.existsSync(gitDir)) {
+    return { isRepo: false };
+  }
+
+  let branch: string | undefined;
+  let summary: string | undefined;
+
+  try {
+    const b = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd,
+      encoding: "utf8",
+    });
+    if (b.status === 0) {
+      branch = b.stdout.trim();
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    const s = spawnSync("git", ["status", "--short"], {
+      cwd,
+      encoding: "utf8",
+    });
+    if (s.status === 0) {
+      const lines = s.stdout
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+      summary = lines.slice(0, 5).join(" | ");
+    }
+  } catch {
+    // ignore
+  }
+
+  return {
+    isRepo: true,
+    branch,
+    summary,
+  };
+}
+
 // ----------------------------
 // Prompt construction
 // ----------------------------
 
-function buildPrompt(question: string): string {
+function buildGeneratePrompt(question: string): string {
   const cwd = process.cwd();
   const user = os.userInfo().username;
   const platform = `${os.platform()} ${os.release()}`;
-  const isGitRepo = fs.existsSync(path.join(cwd, ".git")) ? "yes" : "no";
   const tools = detectTools();
   const shell = detectShell();
   const files = summarizeFiles(cwd);
+  const git = detectGitContext(cwd);
+  const projectCfg = readProjectConfig(cwd);
+
+  const lines: string[] = [];
+
+  lines.push(
+    "You are Ask, a CLI helper that returns shell commands or very short explanations."
+  );
+  lines.push("");
+  lines.push("Environment:");
+  lines.push(`- platform: ${platform}`);
+  lines.push(`- shell: ${shell}`);
+  lines.push(`- user: ${user}`);
+  lines.push(`- cwd: ${cwd}`);
+  lines.push(`- tools_available: ${tools || "none detected"}`);
+  lines.push(`- files_sample: ${files}`);
+  if (git.isRepo) {
+    lines.push(`- git_repo: yes`);
+    if (git.branch) lines.push(`- git_branch: ${git.branch}`);
+    if (git.summary) lines.push(`- git_status_short: ${git.summary}`);
+  } else {
+    lines.push(`- git_repo: no`);
+  }
+
+  if (projectCfg) {
+    lines.push("- project_config:");
+    if (projectCfg.stack) lines.push(`  - stack: ${projectCfg.stack}`);
+    if (projectCfg.packageManager)
+      lines.push(`  - package_manager: ${projectCfg.packageManager}`);
+    if (projectCfg.tags && projectCfg.tags.length) {
+      lines.push(`  - tags: ${projectCfg.tags.join(", ")}`);
+    }
+  }
+
+  lines.push("");
+  lines.push("Guidelines:");
+  lines.push(
+    "1) Prefer a single concise command. If multiple steps are needed, put each command on its own line."
+  );
+  lines.push(
+    '2) Do not add text like "Here is the command"; output only commands or a one-line explanation.'
+  );
+  lines.push(
+    "3) If a command is potentially destructive (rm, find -delete, mass modification), add a single comment line after it starting with '# explain:'."
+  );
+  lines.push(
+    '4) If the user asks a conceptual question (for example: "what is ls"), return a one-sentence answer instead of a command.'
+  );
+  lines.push(
+    "5) If the request is ambiguous, respond with a single clarifying question line starting with '# clarify:'."
+  );
+  lines.push("");
+  lines.push("User request:");
+  lines.push(question);
+  lines.push("");
+  lines.push("Answer:");
+
+  return lines.join("\n");
+}
+
+function buildExplainPrompt(commandText: string): string {
+  const cwd = process.cwd();
+  const platform = `${os.platform()} ${os.release()}`;
+  const shell = detectShell();
 
   return [
-    "You are Ask, a CLI helper that returns shell commands or very short explanations.",
+    "You are Ask, a CLI helper that explains shell commands.",
     "",
     "Environment:",
     `- platform: ${platform}`,
     `- shell: ${shell}`,
-    `- user: ${user}`,
     `- cwd: ${cwd}`,
-    `- git_repo: ${isGitRepo}`,
-    `- files_sample: ${files}`,
-    `- tools_available: ${tools || "none detected"}`,
     "",
-    "Guidelines:",
-    "1) Prefer a single concise command. If multiple steps are really necessary, put each command on its own line.",
-    '2) Do not add introductions like "Here is the command"; output only commands or a one-line explanation.',
-    "3) If a command is potentially destructive (rm, find -delete, mass changes), add a single comment line after it starting with '# explain:'.",
-    '4) If the user asks a conceptual question (for example: "what is ls"), return a one-sentence answer instead of a command.',
-    "5) If the request is ambiguous, respond with a single clarifying question starting with '# clarify:'.",
+    "Task:",
+    "Explain the following command in a concise, step-by-step way.",
+    "Focus on what it does, any side effects, and risks.",
     "",
-    "User request:",
-    question,
+    "Command:",
+    commandText,
     "",
-    "Answer:",
+    "Answer (short explanation, no markdown code fences):",
   ].join("\n");
 }
 
@@ -228,16 +356,47 @@ async function callLLM(prompt: string, apiKey: string): Promise<string> {
     return "find . -type f -mtime -7";
   }
 
-  if (/list files/i.test(prompt)) {
+  if (
+    /how to list files/i.test(prompt) ||
+    /list files in current directory/i.test(prompt)
+  ) {
     return "ls -la";
   }
 
-  return 'echo "[ask-cli] replace callLLM() with a real API call"';
+  if (/Explain the following command/i.test(prompt) && /rm -rf/i.test(prompt)) {
+    return "This command recursively deletes files and directories without asking for confirmation. It is dangerous because it can remove large parts of the filesystem if misused.";
+  }
+
+  return "[ask-cli] replace callLLM() with a real API call";
 }
 
 // ----------------------------
-// Small utilities
+// Output helpers
 // ----------------------------
+
+type ParsedCommand = {
+  command: string;
+  explanation: string | null;
+};
+
+function splitCommandAndExplanation(raw: string): ParsedCommand {
+  const lines = raw.split("\n").map((l) => l.trim());
+  const commands: string[] = [];
+  const explanations: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith("# explain:")) {
+      explanations.push(line.replace(/^# explain:\s*/, "").trim());
+    } else {
+      commands.push(line);
+    }
+  }
+
+  return {
+    command: commands.join("\n").trim(),
+    explanation: explanations.length ? explanations.join(" ") : null,
+  };
+}
 
 function printHistory(): void {
   const entries = readHistory();
@@ -247,10 +406,45 @@ function printHistory(): void {
   }
 
   for (const item of entries) {
-    console.log(`[${item.timestamp}]`);
+    console.log(`[${item.timestamp}] (${item.mode})`);
     console.log(`Q: ${item.question}`);
     console.log(`> ${item.answer}`);
     console.log("");
+  }
+}
+
+async function typewriter(text: string, delayMs = 15): Promise<void> {
+  return new Promise((resolve) => {
+    let i = 0;
+    const interval = setInterval(() => {
+      process.stdout.write(text[i]);
+      i++;
+      if (i >= text.length) {
+        clearInterval(interval);
+        process.stdout.write("\n");
+        resolve();
+      }
+    }, delayMs);
+  });
+}
+
+// ----------------------------
+// CmdBook integration
+// ----------------------------
+
+function saveToCmdBook(command: string, question: string): void {
+  if (!commandInPath("cmdbook")) {
+    console.log(
+      "cmdbook is not available on PATH. Install or expose the cmdbook CLI to use --save."
+    );
+    return;
+  }
+
+  const args = ["add", command, "-d", question, "-t", "ask"];
+  const res = spawnSync("cmdbook", args, { stdio: "inherit" });
+
+  if (res.status !== 0) {
+    console.log("cmdbook add did not complete successfully.");
   }
 }
 
@@ -263,36 +457,42 @@ const program = new Command();
 program
   .name("ask")
   .description("ask: terminal assistant that generates shell commands")
+  .option("--history", "Show previous questions and answers", false)
+  .option("--api-key <API_KEY>", "Set or replace your LLM API key")
+  .hook("preAction", () => {
+    header();
+  });
+
+// main generation entry
+program
   .argument("[question...]", "What you want to do (natural language)")
   .option("--silent", "Suppress spinner and typewriter", false)
   .option("--type", "Show output with typewriter effect", false)
-  .option("--history", "Show previous questions and commands", false)
-  .option("--api-key <API_KEY>", "Set or replace your LLM API key")
+  .option("--json", "Output JSON instead of formatted text", false)
+  .option("--no-clipboard", "Do not copy result to clipboard", false)
+  .option("--save", "Save generated command to cmdbook (if available)", false)
   .action(async (questionParts: string[], options: any) => {
-    const { silent, type, history, apiKey } = options;
+    const { silent, type, json, noClipboard, save } = options;
+    const globalOpts = program.opts<{ history?: boolean; apiKey?: string }>();
 
-    header();
-
-    // 1) API key management
-    if (apiKey) {
+    // global API key handling
+    if (globalOpts.apiKey) {
       const cfg = readConfig();
-      cfg.apiKey = apiKey;
+      cfg.apiKey = globalOpts.apiKey;
       writeConfig(cfg);
       console.log("API key updated.");
       return;
     }
 
-    // 2) History display
-    if (history) {
+    if (globalOpts.history) {
       printHistory();
       return;
     }
 
-    // 3) Normal flow
     const question = questionParts.join(" ").trim();
     if (!question) {
       program.outputHelp();
-      process.exit(0);
+      return;
     }
 
     const cfg = readConfig();
@@ -310,7 +510,7 @@ program
 
     let rawText = "";
     try {
-      const prompt = buildPrompt(question);
+      const prompt = buildGeneratePrompt(question);
       rawText = await callLLM(prompt, effectiveApiKey);
       if (spinner) spinner.succeed("Done");
     } catch (err: any) {
@@ -325,49 +525,114 @@ program
       process.exit(1);
     }
 
-    const lines = stripped.split("\n");
-    const formatted = lines
-      .map((line, index) => (index === 0 ? `> ${line}` : `  ${line}`))
-      .join("\n");
+    const parsed = splitCommandAndExplanation(stripped);
 
-    if (type && !silent) {
-      await typewriter(formatted);
+    if (json) {
+      const payload = {
+        mode: "generate" as AskMode,
+        question,
+        command: parsed.command,
+        explanation: parsed.explanation,
+      };
+      console.log(JSON.stringify(payload, null, 2));
     } else {
-      console.log(formatted);
+      const lines = parsed.command.split("\n");
+      const formatted = lines
+        .map((line, index) => (index === 0 ? `> ${line}` : `  ${line}`))
+        .join("\n");
+
+      if (type && !silent) {
+        await typewriter(formatted);
+      } else {
+        console.log(formatted);
+      }
+
+      if (parsed.explanation) {
+        console.log();
+        console.log(`# explain: ${parsed.explanation}`);
+      }
     }
 
-    // copy plain content (no "> " prefix)
-    try {
-      await clipboard.write(stripped);
-      if (!silent) console.log("Copied to clipboard.");
-    } catch {
-      if (!silent) console.log("Clipboard unavailable.");
+    if (!noClipboard) {
+      try {
+        await clipboard.write(parsed.command || stripped);
+        if (!silent && !json) console.log("Copied to clipboard.");
+      } catch {
+        if (!silent && !json) console.log("Clipboard unavailable.");
+      }
+    }
+
+    if (save && parsed.command) {
+      saveToCmdBook(parsed.command, question);
     }
 
     appendHistory({
       timestamp: new Date().toISOString(),
+      mode: "generate",
       question,
       answer: stripped,
     });
   });
 
-program.parse(process.argv);
+// explain subcommand
+program
+  .command("explain")
+  .description("Explain an existing command instead of generating one")
+  .argument("<command...>", "Command to explain")
+  .option("--json", "Output JSON instead of plain text", false)
+  .action(async (commandParts: string[], options: any) => {
+    const { json } = options;
+    const globalOpts = program.opts<{ apiKey?: string }>();
 
-// ----------------------------
-// Typewriter effect
-// ----------------------------
+    const commandText = commandParts.join(" ").trim();
+    if (!commandText) {
+      console.error("Please provide a command to explain.");
+      process.exit(1);
+    }
 
-function typewriter(text: string, delayMs = 15): Promise<void> {
-  return new Promise((resolve) => {
-    let i = 0;
-    const interval = setInterval(() => {
-      process.stdout.write(text[i]);
-      i++;
-      if (i >= text.length) {
-        clearInterval(interval);
-        process.stdout.write("\n");
-        resolve();
-      }
-    }, delayMs);
+    const cfg = readConfig();
+    const effectiveApiKey: string | undefined =
+      cfg.apiKey || process.env.ASK_CLI_API_KEY || process.env.GOOGLE_API_KEY;
+
+    if (!effectiveApiKey) {
+      console.error(
+        "No API key configured. Use: ask --api-key YOUR_KEY or set ASK_CLI_API_KEY / GOOGLE_API_KEY."
+      );
+      process.exit(1);
+    }
+
+    const spinner = ora("Explaining...").start();
+
+    let rawText = "";
+    try {
+      const prompt = buildExplainPrompt(commandText);
+      rawText = await callLLM(prompt, effectiveApiKey);
+      spinner.succeed("Done");
+    } catch (err: any) {
+      spinner.fail("LLM call failed");
+      console.error(err?.message || String(err));
+      process.exit(1);
+    }
+
+    const stripped = stripCodeFences(rawText);
+
+    if (json) {
+      const payload = {
+        mode: "explain" as AskMode,
+        command: commandText,
+        explanation: stripped,
+      };
+      console.log(JSON.stringify(payload, null, 2));
+    } else {
+      console.log(stripped);
+    }
+
+    appendHistory({
+      timestamp: new Date().toISOString(),
+      mode: "explain",
+      question: commandText,
+      answer: stripped,
+    });
   });
-}
+
+program.parse(process.argv);
