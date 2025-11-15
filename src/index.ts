@@ -7,6 +7,7 @@ import * as path from "path";
 import * as os from "os";
 import { spawnSync } from "child_process";
 import "dotenv/config";
+import OpenAI from "openai";
 
 // ----------------------------
 // Types
@@ -32,7 +33,7 @@ type AskProjectConfig = {
 };
 
 // ----------------------------
-// Error types (for future real API integration)
+// Error types
 // ----------------------------
 
 class AskError extends Error {}
@@ -339,35 +340,36 @@ function buildExplainPrompt(commandText: string): string {
 }
 
 // ----------------------------
-// LLM integration (stub)
+// LLM integration (OpenAI)
 // ----------------------------
 
-/**
- * Stub implementation.
- * Replace this with a real LLM call (OpenAI, Gemini, etc.).
- */
 async function callLLM(prompt: string, apiKey: string): Promise<string> {
-  // simple heuristics to make local testing nicer
-  if (/virtual environment/i.test(prompt)) {
-    return "python -m venv env";
-  }
+  const client = new OpenAI({ apiKey });
 
-  if (/last 7 days/i.test(prompt)) {
-    return "find . -type f -mtime -7";
-  }
+  try {
+    const res = await client.chat.completions.create({
+      model: process.env.ASK_MODEL || "gpt-4.1-mini",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.2,
+    });
 
-  if (
-    /how to list files/i.test(prompt) ||
-    /list files in current directory/i.test(prompt)
-  ) {
-    return "ls -la";
-  }
+    const content = res.choices[0]?.message?.content;
 
-  if (/Explain the following command/i.test(prompt) && /rm -rf/i.test(prompt)) {
-    return "This command recursively deletes files and directories without asking for confirmation. It is dangerous because it can remove large parts of the filesystem if misused.";
-  }
+    if (!content || !content.trim()) {
+      throw new AskContentError("Empty response from OpenAI");
+    }
 
-  return "[ask-cli] replace callLLM() with a real API call";
+    return content.trim();
+  } catch (err: any) {
+    const msg = err?.message || String(err);
+    if (/api key/i.test(msg) || /authentication/i.test(msg)) {
+      throw new AskAuthError(msg);
+    }
+    if (/timeout/i.test(msg)) {
+      throw new AskTimeoutError(msg);
+    }
+    throw new AskError(msg);
+  }
 }
 
 // ----------------------------
@@ -497,11 +499,11 @@ program
 
     const cfg = readConfig();
     const effectiveApiKey: string | undefined =
-      cfg.apiKey || process.env.ASK_CLI_API_KEY || process.env.GOOGLE_API_KEY;
+      cfg.apiKey || process.env.ASK_CLI_API_KEY || process.env.OPENAI_API_KEY;
 
     if (!effectiveApiKey) {
       console.error(
-        "No API key configured. Use: ask --api-key YOUR_KEY or set ASK_CLI_API_KEY / GOOGLE_API_KEY."
+        "No API key configured. Use: ask --api-key YOUR_KEY or set ASK_CLI_API_KEY / OPENAI_API_KEY."
       );
       process.exit(1);
     }
@@ -582,7 +584,6 @@ program
   .option("--json", "Output JSON instead of plain text", false)
   .action(async (commandParts: string[], options: any) => {
     const { json } = options;
-    const globalOpts = program.opts<{ apiKey?: string }>();
 
     const commandText = commandParts.join(" ").trim();
     if (!commandText) {
@@ -592,11 +593,11 @@ program
 
     const cfg = readConfig();
     const effectiveApiKey: string | undefined =
-      cfg.apiKey || process.env.ASK_CLI_API_KEY || process.env.GOOGLE_API_KEY;
+      cfg.apiKey || process.env.ASK_CLI_API_KEY || process.env.OPENAI_API_KEY;
 
     if (!effectiveApiKey) {
       console.error(
-        "No API key configured. Use: ask --api-key YOUR_KEY or set ASK_CLI_API_KEY / GOOGLE_API_KEY."
+        "No API key configured. Use: ask --api-key YOUR_KEY or set ASK_CLI_API_KEY / OPENAI_API_KEY."
       );
       process.exit(1);
     }
