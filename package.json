@@ -3,10 +3,27 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "main": "dist/index.js",
+  "bin": {
+    "ask": "dist/index.js"
+  },
+  "scripts": {
+    "build": "bunx tsc",
+    "dev": "bun src/index.ts"
+  },
+  "license": "MIT",
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/clipboardy": "^2.0.4",
+    "@types/node": "^24.10.1"
   },
   "peerDependencies": {
-    "typescript": "^5"
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "clipboardy": "^5.0.0",
+    "commander": "^14.0.2",
+    "dotenv": "^17.2.3",
+    "ora": "^9.0.0"
   }
 }
