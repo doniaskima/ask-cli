@@ -1,5 +1,7 @@
 {
   "name": "ask-cli",
+  "version": "0.0.1",
+  "description": "ask: a terminal assistant that generates shell commands using an LLM",
   "module": "index.ts",
   "type": "module",
   "private": true,

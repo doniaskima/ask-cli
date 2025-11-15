@@ -5,6 +5,7 @@ import clipboard from "clipboardy";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { spawnSync } from "child_process";
 import "dotenv/config";
 
 type HistoryItem = {
@@ -16,6 +17,11 @@ type HistoryItem = {
 type Config = {
   apiKey?: string;
 };
+
+class ApiError extends Error {}
+class AuthError extends ApiError {}
+class ContentError extends ApiError {}
+class ApiTimeoutError extends ApiError {}
 
 const CONFIG_DIR = path.join(os.homedir(), ".ask-cli");
 const HISTORY_FILE = path.join(CONFIG_DIR, "history.json");
@@ -51,12 +57,124 @@ function saveHistory(items: HistoryItem[]) {
   fs.writeFileSync(HISTORY_FILE, JSON.stringify(items, null, 2), "utf8");
 }
 
+function header() {
+  console.log(
+    "    _          _  \n" +
+      "   / \\   __ _ | | \n" +
+      "  / _ \\ / _` || | \n" +
+      " / ___ \\ (_| || | \n" +
+      "/_/   \\_\\__,_||_| \n"
+  );
+  console.log("ask - terminal assistant for shell commands\n");
+}
+
+function cleanResponse(text: string): string {
+  let t = text.trim();
+
+  if (t.startsWith("```") && t.endsWith("```")) {
+    const firstLineEnd = t.indexOf("\n");
+    if (firstLineEnd !== -1) {
+      const rest = t.slice(firstLineEnd + 1, t.length - 3);
+      t = rest.trim();
+    } else {
+      t = t.replace(/```/g, "").trim();
+    }
+  } else if (t.startsWith("`") && t.endsWith("`")) {
+    t = t.slice(1, -1).trim();
+  }
+
+  return t.trim();
+}
+
+function isToolAvailable(cmd: string): boolean {
+  const whichCmd = process.platform === "win32" ? "where" : "which";
+  try {
+    const res = spawnSync(whichCmd, [cmd], { stdio: "ignore" });
+    return res.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+function getInstalledTools(): string {
+  const candidates = [
+    "git",
+    "npm",
+    "node",
+    "python",
+    "docker",
+    "pip",
+    "go",
+    "rustc",
+    "cargo",
+    "java",
+    "mvn",
+    "gradle",
+  ];
+  const found: string[] = [];
+  for (const t of candidates) {
+    if (isToolAvailable(t)) {
+      found.push(t);
+    }
+  }
+  return found.join(", ");
+}
+
+function getShell(): string {
+  return process.env.SHELL || process.env.COMSPEC || "Unknown";
+}
+
+function getFilesSummary(cwd: string): string {
+  try {
+    const files = fs.readdirSync(cwd);
+    const top = files.slice(0, 20);
+    return top.join(", ") + (files.length > 20 ? "..." : "");
+  } catch {
+    return "Error listing files";
+  }
+}
+
+function buildPrompt(question: string): string {
+  const cwd = process.cwd();
+  const user = os.userInfo().username;
+  const osName = `${os.platform()} ${os.release()}`;
+  const gitRepo = fs.existsSync(path.join(cwd, ".git")) ? "Yes" : "No";
+  const tools = getInstalledTools();
+  const shell = getShell();
+  const files = getFilesSummary(cwd);
+
+  return `SYSTEM:
+You are an expert, concise shell assistant. Your goal is to provide accurate, executable shell commands.
+
+CONTEXT:
+- OS: ${osName}
+- Shell: ${shell}
+- CWD: ${cwd}
+- User: ${user}
+- Git Repo: ${gitRepo}
+- Files (top 20): ${files}
+- Available Tools: ${tools}
+
+RULES:
+1. Primary Goal: Generate only the exact, executable shell command(s) for the ${shell} environment.
+2. Context is Key: Use the CONTEXT (CWD, Files, OS) to write specific, correct commands.
+3. No Banter: Do not include greetings, sign-offs, or conversational filler (for example: "Here is the command:").
+4. Safety: If a command is complex or destructive (for example: rm -rf, find -delete), add a single-line comment (# ...) after the command explaining what it does.
+5. Questions: If the user asks a question (for example: "what is ls?"), provide a concise, one-line answer. Do not output a command.
+6. Ambiguity: If the request is unclear, ask a single, direct clarifying question. Start the line with #.
+
+REQUEST:
+${question}
+
+RESPONSE:
+`;
+}
+
 /**
- * TODO: replace this with a real LLM call (OpenAI, Gemini, etc.)
- * For now it's a stub so you can test the CLI UX.
+ * Stub LLM call.
+ * Replace this with a real integration (OpenAI, Gemini, etc.).
  */
 async function callLLM(prompt: string, apiKey: string): Promise<string> {
-  // Just some simple patterns for testing:
   if (/virtual environment/i.test(prompt)) {
     return "python -m venv env";
   }
@@ -64,7 +182,6 @@ async function callLLM(prompt: string, apiKey: string): Promise<string> {
     return "find . -type f -mtime -7";
   }
 
-  // Fallback: echo with a comment
   return 'echo "[ask-cli stub] Replace callLLM() with real LLM API call"';
 }
 
@@ -96,6 +213,8 @@ program
   .action(async (questionParts: string[], options: any) => {
     const { silent, type, history, apiKey } = options;
 
+    header();
+
     if (apiKey) {
       const cfg = loadConfig();
       cfg.apiKey = apiKey;
@@ -104,7 +223,6 @@ program
       return;
     }
 
-    // 2) Show history
     if (history) {
       const items = loadHistory();
       if (!items.length) {
@@ -129,20 +247,21 @@ program
 
     const cfg = loadConfig();
     const effectiveApiKey: string | undefined =
-      cfg.apiKey || process.env.ASK_CLI_API_KEY;
+      cfg.apiKey || process.env.ASK_CLI_API_KEY || process.env.GOOGLE_API_KEY;
 
     if (!effectiveApiKey) {
       console.error(
-        "No API key configured. Use: ask --api-key YOUR_KEY or set ASK_CLI_API_KEY."
+        "No API key configured. Use: ask --api-key YOUR_KEY or set ASK_CLI_API_KEY or GOOGLE_API_KEY."
       );
       process.exit(1);
     }
 
-    const spinner = !silent ? ora("Thinking...").start() : null;
+    const spinner = !silent ? ora("Generating...").start() : null;
 
-    let cmd = "";
+    let rawText = "";
     try {
-      cmd = await callLLM(question, effectiveApiKey);
+      const prompt = buildPrompt(question);
+      rawText = await callLLM(prompt, effectiveApiKey);
       if (spinner) spinner.succeed("Done");
     } catch (err: any) {
       if (spinner) spinner.fail("LLM call failed");
@@ -150,26 +269,35 @@ program
       process.exit(1);
     }
 
-    const output = `> ${cmd}`;
+    const cleaned = cleanResponse(rawText);
+    if (!cleaned.trim()) {
+      console.error("Warning: model returned empty output.");
+      process.exit(1);
+    }
+
+    const lines = cleaned.split("\n");
+    const formatted = lines
+      .map((line, idx) => (idx === 0 ? `> ${line}` : `  ${line}`))
+      .join("\n");
 
     if (type && !silent) {
-      await typewriter(output);
+      await typewriter(formatted);
     } else {
-      console.log(output);
+      console.log(formatted);
     }
 
     try {
-      await clipboard.write(cmd);
-      if (!silent) console.log("(Copied to clipboard)");
+      await clipboard.write(cleaned);
+      if (!silent) console.log("Copied to clipboard.");
     } catch {
-      if (!silent) console.log("(Clipboard unavailable)");
+      if (!silent) console.log("Clipboard unavailable.");
     }
 
     const historyItems = loadHistory();
     historyItems.push({
       timestamp: new Date().toISOString(),
       question,
-      command: cmd,
+      command: cleaned,
     });
     saveHistory(historyItems);
   });
