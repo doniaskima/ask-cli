@@ -4,7 +4,6 @@
   "description": "ask: a terminal assistant that generates shell commands using an LLM",
   "module": "index.ts",
   "type": "module",
-  "private": true,
   "main": "dist/index.js",
   "bin": {
     "ask": "dist/index.js"
