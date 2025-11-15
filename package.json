@@ -9,9 +9,25 @@
   "bin": {
     "ask": "dist/index.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "build": "bunx tsc",
-    "dev": "bun src/index.ts"
+    "build": "tsc",
+    "prepare": "npm run build"          
+  },
+  "keywords": [
+    "cli",
+    "terminal",
+    "shell",
+    "commands",
+    "openai",
+    "assistant"
+  ],
+  "engines": {
+    "node": ">=20"
   },
   "license": "MIT",
   "devDependencies": {
