@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "clipboardy": "^5.0.0",
+    "cmdbook": "^0.2.0",
     "commander": "^14.0.2",
     "dotenv": "^17.2.3",
     "ora": "^9.0.0"
