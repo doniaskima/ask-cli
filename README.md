@@ -1,4 +1,4 @@
-# ask-cli
+# ask-shell-assistant
 
 `ask` is a small terminal assistant that generates shell commands from natural language.
 It inspects your current environment (OS, shell, files, git repo) and asks an LLM
