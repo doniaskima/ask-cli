@@ -8,6 +8,7 @@ import * as os from "os";
 import { spawnSync } from "child_process";
 import "dotenv/config";
 import OpenAI from "openai";
+import chalk from "chalk";
 
 // ----------------------------
 // Types
@@ -40,6 +41,22 @@ class AskError extends Error {}
 class AskAuthError extends AskError {}
 class AskContentError extends AskError {}
 class AskTimeoutError extends AskError {}
+
+// ----------------------------
+// Theme
+// ----------------------------
+
+const theme = {
+  border: (s: string) => chalk.gray(s),
+  title: (s: string) => chalk.cyanBright.bold(s),
+  subtitle: (s: string) => chalk.gray(s),
+  label: (s: string) => chalk.blueBright(s),
+  accent: (s: string) => chalk.magentaBright(s),
+  success: (s: string) => chalk.greenBright(s),
+  warning: (s: string) => chalk.yellowBright(s),
+  error: (s: string) => chalk.redBright(s),
+  dim: (s: string) => chalk.dim(s),
+};
 
 // ----------------------------
 // Paths / constants
@@ -114,9 +131,15 @@ function readProjectConfig(cwd: string): AskProjectConfig | null {
 // ----------------------------
 
 function header(): void {
-  console.log("=====================================");
-  console.log("  ask - terminal assistant for shell commands");
-  console.log("=====================================\n");
+  const line = "=====================================";
+  console.log(theme.border(line));
+  console.log(
+    "  " +
+      theme.title("ask") +
+      " " +
+      theme.subtitle("• terminal assistant for shell commands")
+  );
+  console.log(theme.border(line) + "\n");
 }
 
 /**
@@ -403,14 +426,17 @@ function splitCommandAndExplanation(raw: string): ParsedCommand {
 function printHistory(): void {
   const entries = readHistory();
   if (!entries.length) {
-    console.log("No history yet.");
+    console.log(theme.warning("No history yet."));
     return;
   }
 
   for (const item of entries) {
-    console.log(`[${item.timestamp}] (${item.mode})`);
-    console.log(`Q: ${item.question}`);
-    console.log(`> ${item.answer}`);
+    const ts =
+      theme.border("[") + theme.accent(item.timestamp) + theme.border("]");
+    const mode = theme.label(item.mode);
+    console.log(`${ts} ${mode}`);
+    console.log(`${theme.label("Q:")} ${item.question}`);
+    console.log(`${theme.label(">")} ${item.answer}`);
     console.log("");
   }
 }
@@ -437,7 +463,9 @@ async function typewriter(text: string, delayMs = 15): Promise<void> {
 function saveToCmdBook(command: string, question: string): void {
   if (!commandInPath("cmdbook")) {
     console.log(
-      "cmdbook is not available on PATH. Install or expose the cmdbook CLI to use --save."
+      theme.warning(
+        "cmdbook is not available on PATH. Install or expose the cmdbook CLI to use --save."
+      )
     );
     return;
   }
@@ -446,7 +474,7 @@ function saveToCmdBook(command: string, question: string): void {
   const res = spawnSync("cmdbook", args, { stdio: "inherit" });
 
   if (res.status !== 0) {
-    console.log("cmdbook add did not complete successfully.");
+    console.log(theme.warning("cmdbook add did not complete successfully."));
   }
 }
 
@@ -482,7 +510,7 @@ program
       const cfg = readConfig();
       cfg.apiKey = globalOpts.apiKey;
       writeConfig(cfg);
-      console.log("API key updated.");
+      console.log(theme.success("API key updated."));
       return;
     }
 
@@ -503,27 +531,31 @@ program
 
     if (!effectiveApiKey) {
       console.error(
-        "No API key configured. Use: ask --api-key YOUR_KEY or set ASK_CLI_API_KEY / OPENAI_API_KEY."
+        theme.error(
+          "No API key configured. Use: ask --api-key YOUR_KEY or set ASK_CLI_API_KEY / OPENAI_API_KEY."
+        )
       );
       process.exit(1);
     }
 
-    const spinner = !silent ? ora("Generating...").start() : null;
+    const spinner = !silent
+      ? ora({ text: theme.dim("Generating..."), spinner: "dots" }).start()
+      : null;
 
     let rawText = "";
     try {
       const prompt = buildGeneratePrompt(question);
       rawText = await callLLM(prompt, effectiveApiKey);
-      if (spinner) spinner.succeed("Done");
+      if (spinner) spinner.succeed(theme.success("Done"));
     } catch (err: any) {
-      if (spinner) spinner.fail("LLM call failed");
-      console.error(err?.message || String(err));
+      if (spinner) spinner.fail(theme.error("LLM call failed"));
+      console.error(theme.error(err?.message || String(err)));
       process.exit(1);
     }
 
     const stripped = stripCodeFences(rawText);
     if (!stripped.trim()) {
-      console.error("Model returned empty output.");
+      console.error(theme.warning("Model returned empty output."));
       process.exit(1);
     }
 
@@ -540,7 +572,9 @@ program
     } else {
       const lines = parsed.command.split("\n");
       const formatted = lines
-        .map((line, index) => (index === 0 ? `> ${line}` : `  ${line}`))
+        .map((line, index) =>
+          index === 0 ? `${theme.label(">")} ${line}` : `  ${line}`
+        )
         .join("\n");
 
       if (type && !silent) {
@@ -551,16 +585,20 @@ program
 
       if (parsed.explanation) {
         console.log();
-        console.log(`# explain: ${parsed.explanation}`);
+        console.log(theme.dim(`# explain: ${parsed.explanation}`));
       }
     }
 
     if (!noClipboard) {
       try {
         await clipboard.write(parsed.command || stripped);
-        if (!silent && !json) console.log("Copied to clipboard.");
+        if (!silent && !json) {
+          console.log(theme.success("Copied to clipboard."));
+        }
       } catch {
-        if (!silent && !json) console.log("Clipboard unavailable.");
+        if (!silent && !json) {
+          console.log(theme.warning("Clipboard unavailable."));
+        }
       }
     }
 
@@ -597,21 +635,26 @@ program
 
     if (!effectiveApiKey) {
       console.error(
-        "No API key configured. Use: ask --api-key YOUR_KEY or set ASK_CLI_API_KEY / OPENAI_API_KEY."
+        theme.error(
+          "No API key configured. Use: ask --api-key YOUR_KEY or set ASK_CLI_API_KEY / OPENAI_API_KEY."
+        )
       );
       process.exit(1);
     }
 
-    const spinner = ora("Explaining...").start();
+    const spinner = ora({
+      text: theme.dim("Explaining..."),
+      spinner: "dots",
+    }).start();
 
     let rawText = "";
     try {
       const prompt = buildExplainPrompt(commandText);
       rawText = await callLLM(prompt, effectiveApiKey);
-      spinner.succeed("Done");
+      spinner.succeed(theme.success("Done"));
     } catch (err: any) {
-      spinner.fail("LLM call failed");
-      console.error(err?.message || String(err));
+      spinner.fail(theme.error("LLM call failed"));
+      console.error(theme.error(err?.message || String(err)));
       process.exit(1);
     }
 
