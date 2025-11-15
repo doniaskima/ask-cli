@@ -58,14 +58,9 @@ function saveHistory(items: HistoryItem[]) {
 }
 
 function header() {
-  console.log(
-    "    _          _  \n" +
-      "   / \\   __ _ | | \n" +
-      "  / _ \\ / _` || | \n" +
-      " / ___ \\ (_| || | \n" +
-      "/_/   \\_\\__,_||_| \n"
-  );
-  console.log("ask - terminal assistant for shell commands\n");
+  console.log("=====================================");
+  console.log("  ask - terminal assistant for shell commands");
+  console.log("=====================================\n");
 }
 
 function cleanResponse(text: string): string {
